@@ -262,6 +262,40 @@ Cities containing `on`.
 
 ---
 
+# ALTER TABLE
+
+## Drop Column
+
+```sql
+ALTER TABLE Customers
+DROP COLUMN Age;
+```
+
+Deletes the `Age` column.
+
+---
+
+# DROP TABLE
+
+```sql
+DROP TABLE Customers;
+```
+
+Deletes the entire `Customers` table.
+
+---
+
+# DELETE Row Example
+
+```sql
+DELETE FROM Customers
+WHERE CustomerID = 1;
+```
+
+Deletes the row where `CustomerID = 1`.
+
+---
+
 # JOIN Operations
 
 - **INNER JOIN** → Only matching rows
@@ -513,36 +547,257 @@ GROUP BY subscription_type;
 
 ---
 
-# ALTER TABLE
-
-## Drop Column
-
-```sql
-ALTER TABLE Customers
-DROP COLUMN Age;
-```
-
-Deletes the `Age` column.
+# SQL Practice Questions and Solutions
 
 ---
 
-# DROP TABLE
+# 1. Second Highest Salary
 
-```sql
-DROP TABLE Customers;
-```
+## Table: employees
 
-Deletes the entire `Customers` table.
+| employee_id | name    | salary |
+|-------------|---------|--------|
+| 1 | Alice   | 80000 |
+| 2 | Bob     | 60000 |
+| 3 | Charlie | 90000 |
+| 4 | David   | 50000 |
 
 ---
 
-# DELETE Row Example
+## Question
+
+Find the second highest salary.
+
+---
+
+## Solution
 
 ```sql
-DELETE FROM Customers
-WHERE CustomerID = 1;
+SELECT MAX(salary) AS second_highest_salary
+FROM employees
+WHERE salary < (
+    SELECT MAX(salary)
+    FROM employees
+);
 ```
 
-Deletes the row where `CustomerID = 1`.
+### Explanation
+- First, the subquery finds the highest salary.
+- Then the outer query finds the maximum salary smaller than the highest salary.
+
+---
+
+# 2. Duplicate Emails
+
+## Table: users
+
+| user_id | email |
+|---------|----------------|
+| 1 | a@test.com |
+| 2 | b@test.com |
+| 3 | a@test.com |
+| 4 | c@test.com |
+
+---
+
+## Question
+
+Find duplicate email addresses.
+
+---
+
+## Solution
+
+```sql
+SELECT 
+    email,
+    COUNT(*) AS duplicate_count
+FROM users
+GROUP BY email
+HAVING COUNT(*) > 1;
+```
+
+### Explanation
+- `GROUP BY` groups rows with the same email.
+- `COUNT(*)` counts occurrences.
+- `HAVING COUNT(*) > 1` filters duplicate emails.
+
+---
+
+# 3. Customers Without Orders
+
+## Table: customers
+
+| customer_id | customer_name |
+|-------------|---------------|
+| 1 | John |
+| 2 | Sarah |
+| 3 | Mike |
+
+---
+
+## Table: orders
+
+| order_id | customer_id | amount |
+|----------|-------------|--------|
+| 101 | 1 | 200 |
+| 102 | 2 | 150 |
+
+---
+
+## Question
+
+Find customers who never placed an order.
+
+---
+
+## Solution
+
+```sql
+SELECT 
+    c.customer_name
+FROM customers c
+LEFT JOIN orders o
+    ON c.customer_id = o.customer_id
+WHERE o.order_id IS NULL;
+```
+
+### Explanation
+- `LEFT JOIN` keeps all customers.
+- Customers without matching orders will have `NULL` values in the orders table.
+- The query filters those NULL rows.
+
+---
+
+# 4. Total Sales Per Product
+
+## Table: products
+
+| product_id | product_name |
+|------------|--------------|
+| 1 | Laptop |
+| 2 | Mouse |
+
+---
+
+## Table: sales
+
+| sale_id | product_id | quantity | price |
+|---------|------------|----------|-------|
+| 1 | 1 | 2 | 1000 |
+| 2 | 2 | 5 | 20 |
+| 3 | 1 | 1 | 1000 |
+
+---
+
+## Question
+
+Calculate the total sales amount for each product.
+
+---
+
+## Solution
+
+```sql
+SELECT 
+    p.product_name,
+    SUM(s.quantity * s.price) AS total_sales
+FROM sales s
+JOIN products p
+    ON s.product_id = p.product_id
+GROUP BY p.product_name;
+```
+
+### Explanation
+- `quantity * price` calculates total amount per sale.
+- `SUM()` adds all sales amounts for each product.
+- `GROUP BY` groups results by product.
+
+---
+
+# 5. Rank Employees by Salary
+
+## Table: employees
+
+| employee_id | name    | salary |
+|-------------|---------|--------|
+| 1 | Alice   | 80000 |
+| 2 | Bob     | 60000 |
+| 3 | Charlie | 90000 |
+| 4 | David   | 80000 |
+
+---
+
+## Question
+
+Rank employees based on salary.
+
+---
+
+## Solution
+
+```sql
+SELECT
+    name,
+    salary,
+    RANK() OVER (
+        ORDER BY salary DESC
+    ) AS salary_rank
+FROM employees;
+```
+
+### Explanation
+- `RANK()` assigns rankings based on salary.
+- `ORDER BY salary DESC` ranks highest salary first.
+- Employees with equal salaries receive the same rank.
+
+---
+
+# 6. Monthly Sales Report
+
+## Table: orders
+
+| order_id | order_date | amount |
+|----------|------------|--------|
+| 1 | 2025-01-10 | 100 |
+| 2 | 2025-01-15 | 200 |
+| 3 | 2025-02-01 | 300 |
+
+---
+
+## Question
+
+Generate total sales by month.
+
+---
+
+## MySQL Solution
+
+```sql
+SELECT
+    DATE_FORMAT(order_date, '%Y-%m') AS month,
+    SUM(amount) AS total_sales
+FROM orders
+GROUP BY DATE_FORMAT(order_date, '%Y-%m')
+ORDER BY month;
+```
+
+---
+
+## PostgreSQL Solution
+
+```sql
+SELECT
+    TO_CHAR(order_date, 'YYYY-MM') AS month,
+    SUM(amount) AS total_sales
+FROM orders
+GROUP BY TO_CHAR(order_date, 'YYYY-MM')
+ORDER BY month;
+```
+
+### Explanation
+- The date is formatted into `YYYY-MM`.
+- `SUM(amount)` calculates total monthly sales.
+- `GROUP BY` combines rows for the same month.
 
 ---
