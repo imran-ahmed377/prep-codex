@@ -347,20 +347,24 @@ Shows matching order and customer information.
 
 ## Question 1
 
-### Find total claim amount and total premium collected per region for 2023 (LEFT JOIN aka LEFT OUTER JOIN)
+### Find total claim amount and total premium collected per region for 2023 (LEFT JOIN)
 
 ```sql
 SELECT policies.region,
        SUM(policies.premium_amount) AS total_premium,
        SUM(claims.claim_amount) AS total_claims
 FROM policies
-LEFT JOIN claims
-ON policies.policy_id = claims.policy_id
+LEFT JOIN claims ON policies.policy_id = claims.policy_id
 WHERE policies.policy_start_date
 BETWEEN '2023-01-01' AND '2023-12-31'
 GROUP BY policies.region;
 ```
+### Output:
 
+| region | total_premium | total_claims |
+|--------|--------------:|-------------:|
+| North  | 2200          | 350          |
+| South  | 1500          | 400          |
 ---
 
 ## Question 2
@@ -371,8 +375,7 @@ GROUP BY policies.region;
 SELECT policies.customer_id,
        SUM(claims.claim_amount) AS total_claims
 FROM policies
-LEFT JOIN claims
-ON policies.policy_id = claims.policy_id
+LEFT JOIN claims ON policies.policy_id = claims.policy_id
 WHERE claims.claim_status = 'Approved'
 GROUP BY policies.customer_id;
 ```
@@ -388,8 +391,7 @@ SELECT policies.region,
        policies.policy_id,
        SUM(claims.claim_amount) AS total_claims
 FROM policies
-LEFT JOIN claims
-ON policies.policy_id = claims.policy_id
+LEFT JOIN claims ON policies.policy_id = claims.policy_id
 GROUP BY policies.region, policies.policy_id
 ORDER BY policies.region, total_claims DESC;
 ```
@@ -421,8 +423,7 @@ ORDER BY policies.region, total_claims DESC;
 SELECT customers.name,
        SUM(orders.amount) AS total_spent
 FROM customers
-JOIN orders
-ON customers.customer_id = orders.customer_id
+JOIN orders ON customers.customer_id = orders.customer_id
 GROUP BY customers.name
 ORDER BY total_spent DESC
 LIMIT 1;
@@ -437,8 +438,7 @@ LIMIT 1;
 ```sql
 SELECT customers.name
 FROM customers
-LEFT JOIN orders
-ON customers.customer_id = orders.customer_id
+LEFT JOIN orders ON customers.customer_id = orders.customer_id
 WHERE orders.customer_id IS NULL;
 ```
 
@@ -452,8 +452,7 @@ WHERE orders.customer_id IS NULL;
 SELECT customers.name,
        SUM(orders.amount) AS total_spent
 FROM customers
-JOIN orders
-ON customers.customer_id = orders.customer_id
+JOIN orders ON customers.customer_id = orders.customer_id
 GROUP BY customers.name
 ORDER BY total_spent DESC
 LIMIT 3;
@@ -483,8 +482,7 @@ LIMIT 3;
 SELECT users.name,
        COUNT(watch_history.movie_id) AS movies_watched
 FROM users
-JOIN watch_history
-ON users.user_id = watch_history.user_id
+JOIN watch_history ON users.user_id = watch_history.user_id
 GROUP BY users.name
 HAVING COUNT(watch_history.movie_id) > 5;
 ```
@@ -499,8 +497,7 @@ HAVING COUNT(watch_history.movie_id) > 5;
 SELECT users.name,
        COUNT(watch_history.movie_id) AS total_movies_watched
 FROM users
-JOIN watch_history
-ON users.user_id = watch_history.user_id
+JOIN watch_history ON users.user_id = watch_history.user_id
 GROUP BY users.name;
 ```
 
@@ -513,8 +510,7 @@ GROUP BY users.name;
 ```sql
 SELECT users.name
 FROM users
-LEFT JOIN watch_history
-ON users.user_id = watch_history.user_id
+LEFT JOIN watch_history ON users.user_id = watch_history.user_id
 WHERE watch_history.user_id IS NULL;
 ```
 
@@ -528,8 +524,7 @@ WHERE watch_history.user_id IS NULL;
 SELECT users.name,
        COUNT(watch_history.movie_id) AS movies_watched
 FROM users
-JOIN watch_history
-ON users.user_id = watch_history.user_id
+JOIN watch_history ON users.user_id = watch_history.user_id
 GROUP BY users.name
 ORDER BY movies_watched DESC
 LIMIT 1;
@@ -660,8 +655,7 @@ Find customers who never placed an order.
 SELECT 
     customers.customer_name
 FROM customers
-LEFT JOIN orders
-    ON customers.customer_id = orders.customer_id
+LEFT JOIN orders ON customers.customer_id = orders.customer_id
 WHERE orders.order_id IS NULL;
 ```
 
@@ -706,8 +700,7 @@ SELECT
     products.product_name,
     SUM(sales.quantity * sales.price) AS total_sales
 FROM sales
-JOIN products
-    ON sales.product_id = products.product_id
+JOIN products ON sales.product_id = products.product_id
 GROUP BY products.product_name;
 ```
 
