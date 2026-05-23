@@ -1,4 +1,7 @@
-# SQL Cheat Sheet
+# SQL Concepts
+
+# Table of Content
+
 
 ## Create Table Statement
 
@@ -262,9 +265,9 @@ Cities containing `on`.
 
 ---
 
-# ALTER TABLE
+## ALTER TABLE
 
-## Drop Column
+### DROP Column
 
 ```sql
 ALTER TABLE Customers
@@ -275,7 +278,7 @@ Deletes the `Age` column.
 
 ---
 
-# DROP TABLE
+### DROP Table
 
 ```sql
 DROP TABLE Customers;
@@ -285,7 +288,7 @@ Deletes the entire `Customers` table.
 
 ---
 
-# DELETE Row Example
+### DELETE Row
 
 ```sql
 DELETE FROM Customers
@@ -296,7 +299,7 @@ Deletes the row where `CustomerID = 1`.
 
 ---
 
-# JOIN Operations
+## JOIN Operations
 
 - **INNER JOIN** → Only matching rows
 - **LEFT JOIN** → All left table rows + matching rows
@@ -305,7 +308,7 @@ Deletes the row where `CustomerID = 1`.
 
 ---
 
-## INNER JOIN Example
+### INNER JOIN Example
 
 ```sql
 SELECT Orders.OrderID,
@@ -320,9 +323,9 @@ Shows matching order and customer information.
 
 ---
 
-# Scenario 1: Insurance Company
+## Scenario 1: Insurance Company
 
-## Policies Table
+### Policies Table
 
 | policy_id | customer_id | policy_start_date | premium_amount | region |
 |-----------|-------------|-------------------|----------------|--------|
@@ -331,7 +334,7 @@ Shows matching order and customer information.
 | 103 | C3 | 2023-06-10 | 1500 | South |
 | 104 | C4 | 2022-12-01 | 800 | South |
 
-## Claims Table
+### Claims Table
 
 | claim_id | policy_id | claim_amount | claim_status |
 |----------|-----------|--------------|--------------|
@@ -344,7 +347,7 @@ Shows matching order and customer information.
 
 ## Question 1
 
-### Find total claim amount and total premium collected per region for 2023
+### Find total claim amount and total premium collected per region for 2023 (LEFT JOIN aka LEFT OUTER JOIN)
 
 ```sql
 SELECT policies.region,
@@ -393,9 +396,9 @@ ORDER BY policies.region, total_claims DESC;
 
 ---
 
-# Scenario 2: E-commerce Store
+## Scenario 2: E-commerce Store
 
-## Tables
+### Tables
 
 ### Customers
 - customer_id
@@ -458,14 +461,14 @@ LIMIT 3;
 
 ---
 
-# Scenario 3: Movie Streaming Platform
+## Scenario 3: Movie Streaming Platform
 
-## Users Table
+### Users Table
 - user_id
 - name
 - subscription_type
 
-## Watch History Table
+### Watch History Table
 - user_id
 - movie_id
 - watch_date
@@ -547,13 +550,13 @@ GROUP BY subscription_type;
 
 ---
 
-# SQL Practice Questions and Solutions
+## SQL Practice Questions and Solutions
 
 ---
 
-# 1. Second Highest Salary
+## 1. Second Highest Salary
 
-## Table: employees
+### Table: employees
 
 | employee_id | name    | salary |
 |-------------|---------|--------|
@@ -587,9 +590,9 @@ WHERE salary < (
 
 ---
 
-# 2. Duplicate Emails
+## 2. Duplicate Emails
 
-## Table: users
+### Table: users
 
 | user_id | email |
 |---------|----------------|
@@ -624,9 +627,9 @@ HAVING COUNT(*) > 1;
 
 ---
 
-# 3. Customers Without Orders
+## 3. Customers Without Orders
 
-## Table: customers
+### Table: customers
 
 | customer_id | customer_name |
 |-------------|---------------|
@@ -636,7 +639,7 @@ HAVING COUNT(*) > 1;
 
 ---
 
-## Table: orders
+### Table: orders
 
 | order_id | customer_id | amount |
 |----------|-------------|--------|
@@ -655,11 +658,11 @@ Find customers who never placed an order.
 
 ```sql
 SELECT 
-    c.customer_name
-FROM customers c
-LEFT JOIN orders o
-    ON c.customer_id = o.customer_id
-WHERE o.order_id IS NULL;
+    customers.customer_name
+FROM customers
+LEFT JOIN orders
+    ON customers.customer_id = orders.customer_id
+WHERE orders.order_id IS NULL;
 ```
 
 ### Explanation
@@ -669,9 +672,9 @@ WHERE o.order_id IS NULL;
 
 ---
 
-# 4. Total Sales Per Product
+## 4. Total Sales Per Product
 
-## Table: products
+### Table: products
 
 | product_id | product_name |
 |------------|--------------|
@@ -680,7 +683,7 @@ WHERE o.order_id IS NULL;
 
 ---
 
-## Table: sales
+### Table: sales
 
 | sale_id | product_id | quantity | price |
 |---------|------------|----------|-------|
@@ -700,12 +703,12 @@ Calculate the total sales amount for each product.
 
 ```sql
 SELECT 
-    p.product_name,
-    SUM(s.quantity * s.price) AS total_sales
-FROM sales s
-JOIN products p
-    ON s.product_id = p.product_id
-GROUP BY p.product_name;
+    products.product_name,
+    SUM(sales.quantity * sales.price) AS total_sales
+FROM sales
+JOIN products
+    ON sales.product_id = products.product_id
+GROUP BY products.product_name;
 ```
 
 ### Explanation
@@ -715,9 +718,9 @@ GROUP BY p.product_name;
 
 ---
 
-# 5. Rank Employees by Salary
+## 5. Rank Employees by Salary
 
-## Table: employees
+### Table: employees
 
 | employee_id | name    | salary |
 |-------------|---------|--------|
@@ -753,9 +756,9 @@ FROM employees;
 
 ---
 
-# 6. Monthly Sales Report
+## 6. Monthly Sales Report
 
-## Table: orders
+### Table: orders
 
 | order_id | order_date | amount |
 |----------|------------|--------|
