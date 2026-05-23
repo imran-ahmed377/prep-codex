@@ -379,6 +379,11 @@ LEFT JOIN claims ON policies.policy_id = claims.policy_id
 WHERE claims.claim_status = 'Approved'
 GROUP BY policies.customer_id;
 ```
+### Output:
+
+| customer_id | total_claims |
+|-------------|--------------|
+| C1          | 350          |
 
 ---
 
@@ -395,7 +400,14 @@ LEFT JOIN claims ON policies.policy_id = claims.policy_id
 GROUP BY policies.region, policies.policy_id
 ORDER BY policies.region, total_claims DESC;
 ```
+### Output:
 
+| region | policy_id | total_claims |
+|--------|-----------|--------------|
+| North  | 101       | 350          |
+| North  | 102       | NULL         |
+| South  | 103       | 400          |
+| South  | 104       | NULL         |
 ---
 
 ## Scenario 2: E-commerce Store
