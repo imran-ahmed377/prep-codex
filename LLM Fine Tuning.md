@@ -1,5 +1,41 @@
 # LLM Fine-Tuning Guide (Step-by-Step)
 
+## Table of Contents
+
+- [What is LLM Fine-Tuning?](#what-is-llm-fine-tuning)
+- [Complete Fine-Tuning Pipeline](#complete-fine-tuning-pipeline)
+- [Step 1: Load Dataset](#step-1-load-dataset)
+- [Step 2: Install Required Libraries](#step-2-install-required-libraries)
+- [Step 3: Check GPU](#step-3-check-gpu)
+- [Step 4: Load the Base Model](#step-4-load-the-base-model)
+- [Step 5: Maximum Sequence Length](#step-5-maximum-sequence-length)
+- [Step 6: Load Model and Tokenizer](#step-6-load-model-and-tokenizer)
+- [Step 7: Why Use 4-Bit?](#step-7-why-use-4-bit)
+- [Step 8: Format Training Prompts](#step-8-format-training-prompts)
+- [Why Add `<|endoftext|>`?](#why-add-endoftext)
+- [Step 9: Create Hugging Face Dataset](#step-9-create-hugging-face-dataset)
+- [Step 10: Add LoRA Adapters](#step-10-add-lora-adapters)
+- [LoRA Rank](#lora-rank)
+- [Target Modules](#target-modules)
+- [LoRA Alpha](#lora-alpha)
+- [Gradient Checkpointing](#gradient-checkpointing)
+- [Step 11: Create Trainer](#step-11-create-trainer)
+- [Step 12: Batch Size](#step-12-batch-size)
+- [Gradient Accumulation](#gradient-accumulation)
+- [Epochs](#epochs)
+- [Learning Rate](#learning-rate)
+- [Optimizer](#optimizer)
+- [Step 13: Train the Model](#step-13-train-the-model)
+- [Step 14: Switch to Inference Mode](#step-14-switch-to-inference-mode)
+- [Step 15: Chat Template](#step-15-chat-template)
+- [Step 16: Generate Response](#step-16-generate-response)
+- [Step 17: Decode Tokens](#step-17-decode-tokens)
+- [Step 18: Save as GGUF](#step-18-save-as-gguf)
+- [Step 19: Download Model](#step-19-download-model)
+- [Important Concepts](#important-concepts)
+- [Complete Fine-Tuning Workflow](#complete-fine-tuning-workflow)
+- [Summary](#summary)
+
 This guide explains the complete LLM fine-tuning process using **Unsloth**, **LoRA**, and **Supervised Fine-Tuning (SFT)** in a simple, beginner-friendly way.
 
 ---
