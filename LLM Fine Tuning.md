@@ -282,9 +282,9 @@ This loads two things.
 
 ## Model
 
-The neural network.
+- The neural network.
 
-Contains billions of learned weights.
+- Contains billions of learned weights.
 
 ---
 
@@ -823,18 +823,19 @@ Downloads the generated `.gguf` file from Google Colab to your computer.
 | Response | Desired output the model should generate. |
 | Fine-Tuning | Continuing training on a task-specific dataset. |
 | LoRA | Trains only small adapter layers instead of the full model. |
+| QLoRA | Combines 4-bit quantization with LoRA. The base model is loaded in 4-bit precision and frozen, while only the small LoRA adapters are trained. This greatly reduces GPU memory usage while maintaining good performance. |
 | PEFT | Techniques that make fine-tuning more memory efficient. |
 | Quantization | Compresses model weights (e.g., 4-bit or 8-bit) to reduce memory usage. |
 | Epoch | One complete pass through the dataset. |
 | Batch Size | Number of samples processed together before gradient accumulation. |
 | Gradient Accumulation | Combines gradients from multiple smaller batches before updating weights. |
 | Learning Rate | Controls how much trainable weights change after each update. |
+| Warmup | A training technique where the learning rate starts small and gradually increases during the first few training steps. This helps stabilize training and prevents large, unstable weight updates at the beginning. |
 | Loss | Measures how far the prediction is from the correct answer. |
 | Backpropagation | Computes gradients used to update trainable weights. |
 | Checkpoint | Saved state of the model during training. |
 | Inference | Using the trained model to make predictions on new inputs. |
 | GGUF | Efficient model format for local inference with tools like Ollama and llama.cpp. |
-
 ---
 
 # Complete Fine-Tuning Workflow
