@@ -1,3 +1,49 @@
+# Table of Contents
+
+- [**End to End Embedding Steps**](#end-to-end-embedding-steps)
+  - [Step 1: Document Extraction](#step-1-document-extraction)
+    - [Code Example: Read the PDF](#code-example-read-the-pdf)
+  - [Step 2: Chunking (Slicing the Cake)](#step-2-chunking-slicing-the-cake)
+    - [Code Example: Split the Text into Chunks](#code-example-split-the-text-into-chunks)
+    - [How to Decide Chunk Size (Paragraph Length)](#how-to-decide-chunk-size-paragraph-length)
+      - [Code Example: Pick a Preset, Then Count the Tokens](#code-example-pick-a-preset-then-count-the-tokens)
+    - [How to Decide Overlap Size (The Safety Net)](#how-to-decide-overlap-size-the-safety-net)
+      - [Code Example: See Overlap With Your Own Eyes](#code-example-see-overlap-with-your-own-eyes)
+      - [Simple Starting Point](#simple-starting-point)
+  - [Step 3: Embedding (Translating into Numbers)](#step-3-embedding-translating-into-numbers)
+    - [Code Example: Turn Chunks into Vectors](#code-example-turn-chunks-into-vectors)
+    - [How to Choose: `text-embedding-3-small` vs. `text-embedding-3-large`](#how-to-choose-text-embedding-3-small-vs-text-embedding-3-large)
+      - [Choose `text-embedding-3-small` if:](#choose-text-embedding-3-small-if)
+      - [Choose `text-embedding-3-large` if:](#choose-text-embedding-3-large-if)
+      - [Code Example: Switching Between the Two](#code-example-switching-between-the-two)
+  - [Step 4: Upserting (Saving to the Vector Database)](#step-4-upserting-saving-to-the-vector-database)
+    - [Code Example: Save the Vectors to Pinecone](#code-example-save-the-vectors-to-pinecone)
+- [**After Embadding: Searching for Answers**](#after-embadding-searching-for-answers)
+  - [Code Example: The Whole Search Flow](#code-example-the-whole-search-flow)
+- [**End to End RAG Steps**](#end-to-end-rag-steps)
+  - [Step 1: The User Asks a Question](#step-1-the-user-asks-a-question)
+  - [Step 2: The Fast Search (Retrieval)](#step-2-the-fast-search-retrieval)
+  - [Step 3: Grabbing the Rough Draft (Top-K)](#step-3-grabbing-the-rough-draft-top-k)
+  - [Step 4: The Deep Clean (Reranking)](#step-4-the-deep-clean-reranking)
+  - [Step 5: Applying the 15% Cutoff Rule (Dynamic-K)](#step-5-applying-the-15-cutoff-rule-dynamic-k)
+  - [Step 6: Feeding the Final AI (The Prompt)](#step-6-feeding-the-final-ai-the-prompt)
+  - [Step 7: The Final Answer is Delivered](#step-7-the-final-answer-is-delivered)
+  - [Putting All 7 Steps Together](#putting-all-7-steps-together)
+- [**The End-to-End Workflow with Azure AI Search**](#the-end-to-end-workflow-with-azure-ai-search)
+  - [Phase 1: The One-Time Setup (Ingestion)](#phase-1-the-one-time-setup-ingestion)
+    - [Code Example: Upload the PDFs](#code-example-upload-the-pdfs)
+    - [Code Example: Tell Azure How to Chunk and Embed (skillset settings)](#code-example-tell-azure-how-to-chunk-and-embed-skillset-settings)
+  - [Phase 2: The Live User Query (The RAG Loop)](#phase-2-the-live-user-query-the-rag-loop)
+    - [Code Example: One Call Does Search + Rerank](#code-example-one-call-does-search-rerank)
+    - [Code Example: Ask Azure OpenAI for the Answer](#code-example-ask-azure-openai-for-the-answer)
+- [**The Full Picture: Every Section and Its Tools**](#the-full-picture-every-section-and-its-tools)
+  - [Diagram 1: The Two Pipelines](#diagram-1-the-two-pipelines)
+  - [Diagram 2: The Azure Shortcut (Azure Does Most Steps For You)](#diagram-2-the-azure-shortcut-azure-does-most-steps-for-you)
+  - [Tool and Library Cheat Sheet](#tool-and-library-cheat-sheet)
+  - [One-Time Install for All the Code Above](#one-time-install-for-all-the-code-above)
+
+---
+
 # End to End Embedding Steps
 
 ## Step 1: Document Extraction
@@ -5,7 +51,7 @@
 - **What you do:** You use a code library (like PyPDF, pdfplumber, or LangChain) to open your 1000 PDF pages.
 - **The goal:** Strip out the raw text from the pages, separating it from the design and layout.
 
-### Code Example
+### Code Example: Read the PDF
 
 ```python
 # Install first:  pip install pypdf
@@ -29,7 +75,7 @@ print(all_text[:300])                      # peek at the first 300 characters
 - **The Golden Rule:** A standard chunk size is about **500 to 1000 words per chunk** (roughly 1 or 2 paragraphs). You also overlap them slightly (e.g., 50 words) so a sentence doesn't get cut in half at the border of a chunk.
 - *Result:* Your 1000 PDF pages will turn into roughly **3,000 separate text chunks**.
 
-### Code Example
+### Code Example: Split the Text into Chunks
 
 ```python
 # Install first:  pip install langchain-text-splitters
@@ -122,7 +168,7 @@ Overlap:    10–20% (~40–80 words)
 - **What you do:** You send all 3,000 text chunks to an **Embedding Model** (like OpenAI's `text-embedding-3-small`).
 - **The goal:** The model reads each paragraph and converts it into a long string of numbers (a vector) that mathematically represents its exact meaning.
 
-### Code Example
+### Code Example: Turn Chunks into Vectors
 
 ```python
 # Install first:  pip install openai
@@ -202,7 +248,7 @@ print(len(shrunk.data[0].embedding))  # 1024
   2. The **Vector** (the string of numbers for searching).
   3. The **Metadata** (the actual raw text of that paragraph and the page number, so you can read it later).
 
-### Code Example
+### Code Example: Save the Vectors to Pinecone
 
 ```python
 # Install first:  pip install pinecone
@@ -554,7 +600,7 @@ If you build your app inside Microsoft Azure, the workflow becomes **much simple
 
 Here is what the **Azure AI Search Workflow** looks like:
 
-### Phase 1: The One-Time Setup (Ingestion)
+## Phase 1: The One-Time Setup (Ingestion)
 
 Instead of writing complex code to chop up your PDFs and turn them into numbers, Azure does it for you:
 
@@ -562,7 +608,7 @@ Instead of writing complex code to chop up your PDFs and turn them into numbers,
 2. **Crack & Chunk:** You turn on Azure's **Document Cracking** feature. It automatically reads the PDFs and chops them into chunks using your chosen chunk/overlap sizes.
 3. **Embed:** Azure has a native connection to Azure OpenAI. It automatically passes the chunks to `text-embedding-3-small` and saves the numbers directly into your **Azure AI Search Index**.
 
-#### Code Example: Upload the PDFs
+### Code Example: Upload the PDFs
 
 ```python
 # Install first:  pip install azure-storage-blob
@@ -577,7 +623,7 @@ with open("company_manual.pdf", "rb") as f:
 print("Uploaded. Azure's indexer will crack, chunk, and embed it automatically.")
 ```
 
-#### Code Example: Tell Azure How to Chunk and Embed (skillset settings)
+### Code Example: Tell Azure How to Chunk and Embed (skillset settings)
 
 You only write this JSON once, in the portal or through the REST API. After that,
 Azure repeats it for every new PDF you drop in the folder.
@@ -610,7 +656,7 @@ Azure repeats it for every new PDF you drop in the folder.
 - `pageOverlapLength: 200` is the 10% overlap safety net.
 
 
-### Phase 2: The Live User Query (The RAG Loop)
+## Phase 2: The Live User Query (The RAG Loop)
 
 When a user asks a question, Azure runs its combined search in a single API call:
 
@@ -633,7 +679,7 @@ Azure OpenAI GPT-4o
 Answer Generated
 ```
 
-#### Code Example: One Call Does Search + Rerank
+### Code Example: One Call Does Search + Rerank
 
 ```python
 # Install first:  pip install azure-search-documents
@@ -667,7 +713,7 @@ for r in results:
     final_pages.append(r["chunk"])
 ```
 
-#### Code Example: Ask Azure OpenAI for the Answer
+### Code Example: Ask Azure OpenAI for the Answer
 
 ```python
 from openai import AzureOpenAI
