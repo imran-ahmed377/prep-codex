@@ -39,9 +39,10 @@
   - [Querying: All Steps in One Function](#querying-all-steps-in-one-function)
 - [**Part 5: Making It Production-Ready**](#part-5-making-it-production-ready)
   - [5.1 Security Checklist](#51-security-checklist)
-  - [5.2 Log Every Answer](#52-log-every-answer)
-  - [5.3 Cost](#53-cost)
-  - [5.4 Speed](#54-speed)
+  - [5.2 Remove Personal Data Before Indexing (PII Redaction)](#52-remove-personal-data-before-indexing-pii-redaction)
+  - [5.3 Log Every Answer](#53-log-every-answer)
+  - [5.4 Cost](#54-cost)
+  - [5.5 Speed](#55-speed)
 - [**Part 6: How to Know It Actually Works (Evaluation)**](#part-6-how-to-know-it-actually-works-evaluation)
   - [6.1 Build a Golden Question Set](#61-build-a-golden-question-set)
   - [6.2 Measure the Search (Recall@K)](#62-measure-the-search-recallk)
@@ -89,7 +90,7 @@ easier.
 INDEXING (once per document)                 QUERYING (every question)
 ────────────────────────────                 ─────────────────────────
 PDF                                          "What is the refund policy?"
- │ 1. Extract text                            │ 1. Rewrite follow-ups
+ │ 1. Extract text (+ remove personal data)   │ 1. Rewrite follow-ups
  │ 2. Cut into chunks                         │ 2. Turn question into numbers
  │ 3. Add context to each chunk               │ 3. Search (vector) ─┐
  │ 4. Turn chunks into numbers                │ 4. Search (keyword) ┘ merge
@@ -138,6 +139,10 @@ pip install pypdf pymupdf langchain-text-splitters tiktoken openai cohere "pinec
 
 # Optional: better PDF parsing (headings + tables) - see Step 1
 pip install docling
+
+# Optional: remove personal data before indexing - see Part 5.2
+pip install presidio-analyzer presidio-anonymizer
+python -m spacy download en_core_web_lg
 ```
 
 Set your API keys in the terminal. **Never paste keys into code.**
@@ -643,7 +648,7 @@ def needs_reindex(path):
 import json, pathlib
 
 def index_document(pdf_path, labels):
-    "Extract -> chunk -> add context -> embed -> replace old version -> upload."
+    "Extract -> redact -> chunk -> add context -> embed -> replace old version -> upload."
     if not needs_reindex(pdf_path):
         print("Unchanged, skipping:", pdf_path)
         return
@@ -654,6 +659,9 @@ def index_document(pdf_path, labels):
     pages = extract_pages(pdf_path)
     for page_no in find_scanned_pages(pages):
         pages[page_no - 1]["text"] = ocr_page(pdf_path, page_no)
+
+    # Remove personal data BEFORE anything is sent to an API (Part 5.2)
+    pages = redact_pages(pages)
 
     # Step 2: chunk
     chunks = chunk_pages(pages, source, labels)
@@ -992,9 +1000,234 @@ put in front of real users.
 | A document hijacks the model | Sources in tags, marked as untrusted data | [Part 4, Step 7](#step-7-build-a-safe-prompt-with-numbered-sources) |
 | The model takes harmful actions | No real actions from retrieved text without human approval | [Part 4, Step 7](#step-7-build-a-safe-prompt-with-numbered-sources) |
 | Keys leak | Keys in environment variables or a secrets manager, never in code | [Part 2](#21-install-everything) |
-| Personal data in documents | Redact PII before indexing if users shouldn't see it | [Part 10](#part-10-not-covered-here) |
+| Personal data in documents | Redact PII before indexing if users shouldn't see it | [5.2](#52-remove-personal-data-before-indexing-pii-redaction) |
 
-## 5.2 Log Every Answer
+## 5.2 Remove Personal Data Before Indexing (PII Redaction)
+
+**PII** (Personally Identifiable Information) is anything that points to one specific
+person: names, email addresses, phone numbers, home addresses, ID and passport numbers,
+bank and card numbers, dates of birth, medical details.
+
+**Redaction** means finding that data and replacing it with a placeholder, **before** it
+enters the pipeline:
+
+```text
+Before:  "Sam Lee (EMP-004211) can be reached at sam.lee@gmail.com."
+After:   "<PERSON> (<EMPLOYEE_ID>) can be reached at <EMAIL>."
+```
+
+### Why It Matters in RAG
+
+Once personal data is indexed, it leaks in ways that are hard to undo:
+
+- **Anyone who can search that chunk can read it.** Ask *"What is Sam Lee's phone
+  number?"* and the bot happily retrieves it.
+- **It leaves your machine.** Every chunk is sent to an embedding API and, with
+  contextual retrieval ([Step 3](#step-3-give-every-chunk-context)), to an LLM as well.
+- **It spreads.** Copies end up in the vector database, `chunks.json`, logs, caches and
+  backups. When someone asks to have their data deleted (GDPR's "right to be forgotten"),
+  you have to find every copy.
+- **Vectors aren't anonymous.** Research has shown that text can be partly rebuilt from its
+  embedding, so "we only store the numbers" doesn't protect anyone.
+
+The cheapest fix is to **stop personal data at the door**, before chunking and embedding.
+
+### First Decide: Redact or Restrict?
+
+Not all personal data should be removed. Ask: **who should be able to see this?**
+
+| Situation | Example | What to do |
+| :-- | :-- | :-- |
+| Nobody using the chatbot needs it | Home addresses, ID numbers, salaries in an HR export | **Redact** it before indexing |
+| Some users need it, others must not see it | Customer records that only support agents may read | **Don't redact.** Label the chunks and use a permission filter ([Part 4, Step 3](#step-3-search-with-a-permission-filter)) |
+| It's public on purpose | `support@acme.com`, the CEO's name, the office phone number | **Keep it** (put it on an allow-list) |
+
+> **Redaction can remove answers.** If your handbook says *"Overtime is approved by Jane
+> Smith"*, redacting every name turns the answer into *"approved by &lt;PERSON&gt;"*. That's
+> why you decide first, and allow-list the names users are meant to see.
+
+### Where Redaction Goes in the Pipeline
+
+```text
+Extract text (+ OCR)  ──►  REDACT  ──►  Chunk  ──►  Add context  ──►  Embed  ──►  Store
+```
+
+Redact **right after extraction** (including OCR output), so the personal data never
+reaches the LLM that writes chunk context, the embedding API, or the database. Redacting
+only the stored text is too late: the APIs have already seen the original, and the vector
+was built from it.
+
+### Level 1: Regex for Fixed Formats (Free, Instant)
+
+Emails, card numbers and ID numbers follow fixed patterns, so a regular expression can
+find them. This includes your company's **own** formats (employee IDs, customer numbers),
+which no ready-made tool knows about.
+
+```python
+import re
+
+PATTERNS = {
+    "EMAIL":       r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+",
+    "CARD_NUMBER": r"\b(?:\d[ -]?){12,15}\d\b",       # 13-16 digits, spaces or dashes allowed
+    "US_SSN":      r"\b\d{3}-\d{2}-\d{4}\b",
+    "EMPLOYEE_ID": r"\bEMP-\d{6}\b",                  # your company's own format
+}
+KEEP = {"support@acme.com", "hr@acme.com"}            # public on purpose: never redact these
+
+def redact_simple(text):
+    "Replace every pattern match with a <LABEL> placeholder, except allow-listed values."
+    for label, pattern in PATTERNS.items():
+        text = re.sub(pattern,
+                      lambda m: m.group(0) if m.group(0) in KEEP else f"<{label}>",
+                      text)
+    return text
+
+print(redact_simple("Email sam.lee@gmail.com or support@acme.com. "
+                    "SSN 219-09-9999, card 4111 1111 1111 1111, ID EMP-004211."))
+# Email <EMAIL> or support@acme.com. SSN <US_SSN>, card <CARD_NUMBER>, ID <EMPLOYEE_ID>.
+```
+
+**What regex can't do:** find **names** (*"Sam Lee"* looks like any two words), reliably
+find **phone numbers** (they come in dozens of formats and look like other numbers), or
+understand context. That's Level 2.
+
+### Level 2: Presidio for Names, Phone Numbers and More
+
+**Microsoft Presidio** is a free, open-source PII detector. It combines a language model
+that recognizes names, places and organizations with patterns, checksums and context words
+for 30+ kinds of PII. You can add your own patterns to it.
+
+```bash
+pip install presidio-analyzer presidio-anonymizer
+python -m spacy download en_core_web_lg      # the English language model Presidio uses
+```
+
+```python
+from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
+from presidio_anonymizer import AnonymizerEngine
+
+analyzer   = AnalyzerEngine()                # finds PII
+anonymizer = AnonymizerEngine()              # replaces it
+
+# Teach Presidio your company's own ID format
+analyzer.registry.add_recognizer(PatternRecognizer(
+    supported_entity="EMPLOYEE_ID",
+    patterns=[Pattern(name="employee_id", regex=r"\bEMP-\d{6}\b", score=0.9)],
+))
+
+# Pick what to remove. Leaving out LOCATION keeps "our London office" readable.
+ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD",
+            "IBAN_CODE", "US_SSN", "UK_NHS", "EMPLOYEE_ID"]
+KEEP = ["support@acme.com", "hr@acme.com", "Acme"]   # public on purpose
+
+def redact(text):
+    "Find personal data and replace each piece with <ENTITY_TYPE>."
+    findings = analyzer.analyze(
+        text=text,
+        language="en",
+        entities=ENTITIES,
+        score_threshold=0.5,                 # ignore weak guesses (raise it if too much is redacted)
+        allow_list=KEEP,
+    )
+    return anonymizer.anonymize(text=text, analyzer_results=findings).text
+
+print(redact("Sam Lee (EMP-004211) called from +44 20 7946 0958. Reply via support@acme.com."))
+# Roughly (exact results depend on the language model):
+# <PERSON> (<EMPLOYEE_ID>) called from <PHONE_NUMBER>. Reply via support@acme.com.
+```
+
+### Choose How to Replace It
+
+Replacing with `<PERSON>` is the default, but Presidio has other **operators**:
+
+| Method | Result | Use when |
+| :-- | :-- | :-- |
+| **Replace** (default) | `<PERSON>` | Most cases. The reader still knows *something* was there |
+| **Mask** | `************1111` | People need to recognize *which* card or account, without seeing all of it |
+| **Hash** | a long code, same input → same code | You need to tell people apart without knowing who they are |
+| **Encrypt** | reversible with a secret key | Authorized staff must be able to recover the original later |
+
+```python
+from presidio_anonymizer.entities import OperatorConfig
+
+OPERATORS = {
+    "CREDIT_CARD": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 12, "from_end": False}),
+    "DEFAULT":     OperatorConfig("replace"),     # everything else -> <ENTITY_TYPE>
+}
+
+def redact(text):
+    "Same as before, but cards are masked instead of replaced."
+    findings = analyzer.analyze(text=text, language="en", entities=ENTITIES,
+                                score_threshold=0.5, allow_list=KEEP)
+    return anonymizer.anonymize(text=text, analyzer_results=findings, operators=OPERATORS).text
+```
+
+### Plug It into the Pipeline
+
+One function, called right after extraction in `index_document()`
+([Indexing: All Steps in One Function](#indexing-all-steps-in-one-function)):
+
+```python
+def redact_pages(pages):
+    "Remove personal data from every page before it is chunked or sent to any API."
+    for p in pages:
+        p["text"] = redact(p["text"])
+    return pages
+```
+
+Don't forget the **other** places personal data can end up:
+
+- **Your logs.** Users type personal data into their questions (*"I'm EMP-004211, what's my
+  leave balance?"*). Redact questions before writing them to the log ([5.3](#53-log-every-answer)).
+- **Page images.** If you store page images for multimodal RAG ([7.2](#72-search-page-images-instead-of-text-multimodal-rag)),
+  the PII is still in the picture. Presidio's image redactor (`presidio-image-redactor`)
+  blacks it out.
+- **Data that's already indexed.** Turning on redaction only affects new uploads.
+  Re-index the affected files ([Step 6](#step-6-update-or-delete-a-document-later)) and
+  clean up old logs, `chunks.json` and backups.
+
+### Check That It Worked
+
+No detector catches 100%. Test it like everything else:
+
+```python
+import json, pathlib
+
+# 1. Pick real values you KNOW are in the source documents, and check they're gone
+KNOWN_PII = ["sam.lee@gmail.com", "EMP-004211", "+44 20 7946 0958"]
+stored = pathlib.Path("chunks.json").read_text()
+leaks = [value for value in KNOWN_PII if value in stored]
+print("Leaked values:", leaks or "none")
+
+# 2. Read a random sample of chunks yourself, looking for misses AND over-redaction
+import random
+for c in random.sample(json.loads(stored), 10):
+    print(c["id"], "->", c["text"][:150], "\n")
+```
+
+- **Misses** usually hide in tables, all-caps text, and names from other languages.
+- **Over-redaction** shows up as product or company names turned into `<PERSON>`. Add them
+  to `KEEP`.
+- Add questions like *"What is Sam Lee's phone number?"* to your golden set
+  ([6.1](#61-build-a-golden-question-set)) with `"must_contain": None`: the bot should say
+  it couldn't find it.
+
+### Other Tools
+
+| Tool | Type | Good for |
+| :-- | :-- | :-- |
+| **Regex** | Free, local | Fixed formats and your own ID numbers |
+| **Microsoft Presidio** | Free, open source, local | General-purpose default; data never leaves your machine |
+| **Azure AI Language PII detection** | Cloud API | Many languages; also built into Azure AI Search as the *PII Detection skill* (see [RAG_Azure.md](RAG_Azure.md)) |
+| **Amazon Comprehend** | Cloud API | Projects on AWS |
+| **Google Cloud Sensitive Data Protection** | Cloud API | Projects on Google Cloud |
+| **An LLM with redaction instructions** | Cloud API | Unusual formats and context ("the patient in room 4"); but it sends the PII to the model |
+
+> **Regulated data** (health records, financial data, children's data) has legal rules about
+> what counts as personal data and how long you can keep it (GDPR, HIPAA and others).
+> Agree on the rules with your compliance or legal team **before** indexing.
+
+## 5.3 Log Every Answer
 
 When a user reports a wrong answer, you need to know **which chunks the model saw**.
 Without this log, debugging is guesswork.
@@ -1006,7 +1239,7 @@ def log_answer(user, question, final, answer):
     record = {
         "time":     datetime.datetime.now().isoformat(),
         "user":     user["name"],
-        "question": question,
+        "question": redact(question),            # users type personal data too (5.2)
         "chunks":   [{"id": c["id"], "score": round(c["score"], 3)} for c in final],
         "answer":   answer,
     }
@@ -1023,7 +1256,7 @@ The log tells you at a glance which part failed:
 Hosted tools like Langfuse, LangSmith, Arize Phoenix or Azure AI Foundry tracing do this
 with charts and search.
 
-## 5.3 Cost
+## 5.4 Cost
 
 Rough shape for the 1,000-page example. Prices change constantly, so check the pricing
 pages; the **ratio** between rows is what matters.
@@ -1044,7 +1277,7 @@ pages; the **ratio** between rows is what matters.
 - Cache answers to repeated questions.
 - Keep the instructions identical across calls so the provider's prompt caching kicks in.
 
-## 5.4 Speed
+## 5.5 Speed
 
 | Stage | Typical time |
 | :-- | :-- |
@@ -1311,6 +1544,8 @@ It's powerful but **expensive to build** (many LLM calls per document). Use it o
 | Quality dropped after switching embedding provider | Missing `input_type` (query vs document) | Set it on both sides |
 | Every upload rejected | Index `dimension` doesn't match the model | 1536 for `-small`, 3072 for `-large` |
 | Slow (5+ seconds) | Too many candidates, no streaming | Rerank 25, `-fast` reranker, stream |
+| Bot reveals phone numbers, emails or ID numbers | Personal data was indexed unredacted | Redact after extraction (5.2), then re-index the files |
+| Answers say `<PERSON>` where a name is needed | Over-redaction | Add public names to the allow-list (`KEEP`), or raise `score_threshold` |
 
 ---
 
@@ -1322,7 +1557,7 @@ It's powerful but **expensive to build** (many LLM calls per document). Use it o
 flowchart TD
     subgraph IDX["INDEXING - once per document"]
         direction TB
-        I1["<b>1. Extract</b><br/>pypdf | Docling<br/>scans: vision LLM OCR"]
+        I1["<b>1. Extract + redact PII</b><br/>pypdf | Docling<br/>scans: vision LLM OCR<br/>personal data: Presidio"]
         I2["<b>2. Chunk</b><br/>~512 tokens, ~10% overlap<br/>one page at a time"]
         I3["<b>3. Add context</b><br/>title + section, or LLM-written"]
         I4["<b>4. Embed</b><br/>text-embedding-3-small"]
@@ -1363,6 +1598,7 @@ flowchart TD
 | Extract | Pulls text out of files | `pypdf`, `pymupdf`, **Docling**, `unstructured`, LlamaParse |
 | OCR | Reads scanned pages | Vision LLM, Azure Document Intelligence, Amazon Textract, Mistral OCR, `pytesseract` |
 | Tables | Keeps rows and columns | `pdfplumber`, Docling, Azure `prebuilt-layout` |
+| Redact PII | Removes personal data before indexing | Regex, Microsoft Presidio, Azure AI Language PII, Amazon Comprehend, Google Sensitive Data Protection |
 | Chunk | Cuts text into pieces | `langchain-text-splitters`, Docling `HybridChunker`, `tiktoken` |
 | Add context | Makes chunks self-explanatory | Plain Python (Level 1), small LLM (Level 2) |
 | Embed | Text to numbers | OpenAI `text-embedding-3`, Voyage 4, Cohere Embed v4, Gemini Embedding, Qwen3-Embedding |
@@ -1404,6 +1640,9 @@ flowchart TD
 | **Floor / cutoff** | Minimum score a chunk needs to be sent to the LLM |
 | **Contextual retrieval** | Adding a short description to each chunk before embedding |
 | **Prompt injection** | Text in a document that tries to give the model new instructions |
+| **PII** | Personally Identifiable Information: data that points to one specific person |
+| **Redaction** | Finding PII and replacing it with a placeholder like `<PERSON>` |
+| **Allow-list** | Values that must never be redacted (public emails, company names) |
 | **Grounded** | Every fact in the answer is supported by the sources |
 | **Recall@K** | Share of test questions whose correct chunk appears in the top K |
 | **Agentic RAG** | The model calls a search tool itself, as many times as it needs |
@@ -1414,8 +1653,6 @@ flowchart TD
 
 These are real topics, left out to keep this guide beginner-friendly:
 
-- **PII redaction:** removing personal data (names, emails, ID numbers) before indexing,
-  for example with Microsoft Presidio or Azure AI Language PII detection.
 - **Self-hosted models:** running embedding, reranking and answer models on your own GPUs
   (vLLM, Ollama, Text Embeddings Inference) for privacy or cost.
 - **Fine-tuning embeddings or rerankers** on your own domain data.

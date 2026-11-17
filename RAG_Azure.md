@@ -541,6 +541,7 @@ print(grounding[:500])
 | Topic | What to do on Azure |
 | :-- | :-- |
 | **Permissions** | Filter on labels (`search.in(visibility, ...)`) as shown. For per-user document permissions, look up Azure AI Search *document-level access control* (it can honor Entra ID / ACL permissions from the source). |
+| **Personal data (PII)** | Add the **PII Detection skill** (`#Microsoft.Skills.Text.PIIDetectionSkill`, with `maskingMode: "replace"`) to the skillset **before** the Text Split skill, and split its `maskedText` output instead of `/document/content`. The why and how are in [RAG.md 5.2](RAG.md#52-remove-personal-data-before-indexing-pii-redaction). |
 | **Keyless auth** | Managed identity for Search → OpenAI and Search → Storage; `DefaultAzureCredential` in your app. |
 | **Network** | Private endpoints for Search, OpenAI and Storage; disable public access. |
 | **Prompt injection** | Same rules as [RAG.md](RAG.md#step-7-build-a-safe-prompt-with-numbered-sources); also turn on **Azure AI Content Safety Prompt Shields** for documents. |
