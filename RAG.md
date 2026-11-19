@@ -47,6 +47,7 @@
   - [6.1 Build a Golden Question Set](#61-build-a-golden-question-set)
   - [6.2 Measure the Search (Recall@K)](#62-measure-the-search-recallk)
   - [6.3 Measure the Answer (Groundedness)](#63-measure-the-answer-groundedness)
+  - [6.4 Evaluate with Ragas (Ready-Made Metrics)](#64-evaluate-with-ragas-ready-made-metrics)
 - [**Part 7: Beyond the Basic Pipeline (Modern Techniques)**](#part-7-beyond-the-basic-pipeline-modern-techniques)
   - [7.1 Agentic RAG: Let the Model Decide When to Search](#71-agentic-rag-let-the-model-decide-when-to-search)
   - [7.2 Search Page Images Instead of Text (Multimodal RAG)](#72-search-page-images-instead-of-text-multimodal-rag)
@@ -143,6 +144,9 @@ pip install docling
 # Optional: remove personal data before indexing - see Part 5.2
 pip install presidio-analyzer presidio-anonymizer
 python -m spacy download en_core_web_lg
+
+# Optional: evaluation with Ragas - see Part 6.4
+pip install "ragas>=0.4" pandas
 ```
 
 Set your API keys in the terminal. **Never paste keys into code.**
@@ -1300,17 +1304,33 @@ becomes superstition. This is the most-skipped step in RAG and the one that matt
 
 ## 6.1 Build a Golden Question Set
 
-Write **20-50 real questions**, each with a short phrase that MUST appear in the correct
-chunk. An afternoon of work you'll reuse forever.
+Write **20-50 real questions**. For each one, write down two things:
+
+- **`must_contain`**: a short phrase that MUST appear in the correct chunk (used in 6.2 and 6.3).
+- **`reference`**: the correct answer in one sentence (used by Ragas in [6.4](#64-evaluate-with-ragas-ready-made-metrics)).
+
+An afternoon of work you'll reuse forever.
 
 ```python
 GOLDEN = [
-    {"question": "How long is the warranty?",       "must_contain": "2 years"},
-    {"question": "Can I return a broken item?",     "must_contain": "30 days"},
-    {"question": "Who approves overtime?",          "must_contain": "line manager"},
-    {"question": "What is the mileage rate?",       "must_contain": "0.45"},
-    {"question": "What does error E-102 mean?",     "must_contain": "E-102"},
-    {"question": "What is the CEO's home address?", "must_contain": None},   # SHOULD say "not found"
+    {"question":     "How long is the warranty?",
+     "must_contain": "2 years",
+     "reference":    "The warranty lasts 2 years from the date of purchase."},
+    {"question":     "Can I return a broken item?",
+     "must_contain": "30 days",
+     "reference":    "Yes. Broken items can be returned within 30 days for a full refund."},
+    {"question":     "Who approves overtime?",
+     "must_contain": "line manager",
+     "reference":    "Overtime must be approved in advance by the employee's line manager."},
+    {"question":     "What is the mileage rate?",
+     "must_contain": "0.45",
+     "reference":    "Business mileage is reimbursed at 0.45 per mile."},
+    {"question":     "What does error E-102 mean?",
+     "must_contain": "E-102",
+     "reference":    "Error E-102 means the battery is overheating; switch the device off and contact support."},
+    {"question":     "What is the CEO's home address?",
+     "must_contain": None,                     # SHOULD say "not found"
+     "reference":    None},
 ]
 TEST_USER = {"name": "eval", "allowed_levels": ["public", "employees", "managers"]}
 ```
@@ -1383,8 +1403,252 @@ print(f"\nScore: {passed} / {len(GOLDEN)}")
 **Run this after every change** to chunk size, models, the floor, or the prompt. A change
 that doesn't move these numbers isn't an improvement, just a change.
 
-Ready-made tools if you'd rather not write your own: **ragas**, **deepeval**, **promptfoo**,
-**Azure AI Foundry evaluations**.
+Want a detailed score for each part of the pipeline instead of pass/fail? That's what
+Ragas does ([6.4](#64-evaluate-with-ragas-ready-made-metrics)).
+
+## 6.4 Evaluate with Ragas (Ready-Made Metrics)
+
+**Ragas** is a free, open-source library of ready-made **LLM-judge metrics** for RAG.
+Sections 6.2-6.3 give you a quick pass/fail. Ragas gives every answer a **score from 0 to 1
+on five separate checks**, judged claim by claim, so you can see **which step** of the
+pipeline is weak.
+
+> **Version note:** this section uses **Ragas 0.4** (current as of Nov 2026) and its
+> `ragas.metrics.collections` API. Older tutorials use `evaluate()`, `EvaluationDataset`,
+> `SingleTurnSample` and `LangchainLLMWrapper`. Those were deprecated in 0.4 and are due to be
+> removed in 1.0.
+
+**Home-made checks or Ragas?** Use both, for different jobs:
+
+| | Home-made (6.2-6.3) | Ragas (6.4) |
+| :-- | :-- | :-- |
+| Setup | None | `pip install` + a reference answer per question |
+| Cost per run | About 1 cheap LLM call per question | Several judge calls per question, per metric |
+| Result | Pass / fail | 0-1 score per metric, per question |
+| Best for | A quick check after every small change | A deeper comparison before a release, or when you can't tell why answers are bad |
+
+### 6.4a What Ragas Measures
+
+Each metric answers one question and points at one part of the pipeline:
+
+| Metric | The question it answers | Part it tests | How it's scored (simplified) | Needs `reference`? |
+| :-- | :-- | :-- | :-- | :-- |
+| **Context Recall** | Did search find **everything** needed to answer? | Search ([Part 4](#part-4-the-query-pipeline-runs-on-every-question), Steps 3-4) | Splits the reference answer into facts; counts how many appear in the retrieved chunks | Yes |
+| **Context Precision** | Are the **useful** chunks ranked at the **top**? | Rerank + cutoff (Steps 5-6) | Judges each chunk useful or not; rewards useful chunks that come first | Yes |
+| **Faithfulness** | Is every claim in the answer **backed by the sources**? | Answer writing (Steps 7-8) | Splits the answer into claims; share of claims the chunks support | No |
+| **Answer Relevancy** | Does the answer actually **address the question**? | Answer writing | Guesses which questions the answer fits; compares them with the real question | No |
+| **Factual Correctness** | Is the answer **actually right**? | The whole pipeline | Compares the answer's claims with the reference answer | Yes |
+
+> **In plain words:** Faithfulness catches **hallucinations** (claims not in the sources).
+> Factual Correctness catches **wrong answers**, including ones that faithfully repeat the
+> wrong chunk.
+
+### 6.4b Install and Choose a Judge Model
+
+```bash
+pip install "ragas>=0.4" pandas
+```
+
+Ragas uses an LLM as the **judge**, plus an embedding model for Answer Relevancy. It runs
+asynchronously, so it needs the **async** OpenAI client.
+
+```python
+from openai import AsyncOpenAI
+from ragas.llms import llm_factory
+from ragas.embeddings.base import embedding_factory
+from ragas.metrics.collections import (
+    AnswerRelevancy, ContextPrecision, ContextRecall, FactualCorrectness, Faithfulness,
+)
+
+JUDGE_MODEL = SMALL_MODEL                  # cheap; switch to CHAT_MODEL if scores look noisy
+
+judge_client     = AsyncOpenAI()            # reads OPENAI_API_KEY
+judge_llm        = llm_factory(JUDGE_MODEL, client=judge_client)
+judge_embeddings = embedding_factory("openai", model=EMBED_MODEL, client=judge_client)
+
+METRICS = {
+    "context_recall":      ContextRecall(llm=judge_llm),
+    "context_precision":   ContextPrecision(llm=judge_llm),
+    "faithfulness":        Faithfulness(llm=judge_llm),
+    "answer_relevancy":    AnswerRelevancy(llm=judge_llm, embeddings=judge_embeddings),
+    "factual_correctness": FactualCorrectness(llm=judge_llm),
+}
+
+# Each metric only accepts the fields it needs
+NEEDS = {
+    "context_recall":      ["user_input", "retrieved_contexts", "reference"],
+    "context_precision":   ["user_input", "retrieved_contexts", "reference"],
+    "faithfulness":        ["user_input", "response", "retrieved_contexts"],
+    "answer_relevancy":    ["user_input", "response"],
+    "factual_correctness": ["response", "reference"],
+}
+```
+
+> `llm_factory` also accepts Anthropic, Google and local (Ollama) clients through its
+> `provider=` argument, so the judge doesn't have to come from the same company as your
+> answer model.
+
+### 6.4c Collect What Ragas Needs
+
+Ragas grades **what your pipeline actually did**, so first run every golden question
+through `ask()` ([Part 4](#querying-all-steps-in-one-function)) and record four fields:
+
+| Ragas field | What it is | Where it comes from |
+| :-- | :-- | :-- |
+| `user_input` | The question | `GOLDEN` |
+| `retrieved_contexts` | The chunks the LLM was given, best first | `final` from `ask()` |
+| `response` | The answer the bot gave | `answer` from `ask()` |
+| `reference` | The correct answer | `GOLDEN` |
+
+```python
+def collect_samples(golden):
+    "Run every answerable golden question through the real pipeline and record the results."
+    samples = []
+    for g in golden:
+        if g["reference"] is None:
+            continue                          # "should refuse" questions are checked in 6.3
+        answer, final = ask(g["question"], TEST_USER)
+        samples.append({
+            "user_input":         g["question"],
+            "retrieved_contexts": [c["text"] for c in final],   # what the LLM actually saw
+            "response":           answer,
+            "reference":          g["reference"],
+        })
+    return samples
+
+samples = collect_samples(GOLDEN)
+print("Samples collected:", len(samples))
+```
+
+### 6.4d Score Every Answer
+
+Every question is scored on all five metrics. The calls run **in parallel**, with a limit
+so you don't hit the API's rate limit.
+
+```python
+import asyncio
+import pandas as pd
+
+async def score_one(name, sample, limit):
+    "One metric on one sample. Returns a number from 0 to 1, or None if it failed."
+    async with limit:                         # wait for a free slot
+        try:
+            result = await METRICS[name].ascore(**{field: sample[field] for field in NEEDS[name]})
+            return result.value
+        except Exception as error:            # e.g. no chunks retrieved, judge timed out
+            print(f"{name} failed on {sample['user_input']!r}: {error}")
+            return None
+
+async def score_sample(sample, limit):
+    "All five metrics on one sample."
+    values = await asyncio.gather(*(score_one(name, sample, limit) for name in METRICS))
+    return {"question": sample["user_input"], **dict(zip(METRICS, values))}
+
+async def score_all(samples, max_parallel=8):
+    limit = asyncio.Semaphore(max_parallel)   # at most 8 judge calls at the same time
+    rows = await asyncio.gather(*(score_sample(s, limit) for s in samples))
+    return pd.DataFrame(rows)
+
+
+scores = asyncio.run(score_all(samples))      # in Jupyter, use: scores = await score_all(samples)
+
+pd.set_option("display.width", 200)
+print(scores.round(2).to_string(index=False))
+print("\nAverage per metric:")
+print(scores.drop(columns="question").mean().round(2))
+```
+
+Example output (illustrative numbers):
+
+```text
+question                     context_recall  context_precision  faithfulness  answer_relevancy  factual_correctness
+How long is the warranty?              1.00               1.00          1.00              0.94                 0.86
+Can I return a broken item?            1.00               0.83          1.00              0.95                 1.00
+Who approves overtime?                 0.00               0.00          0.50              0.72                 0.00
+What is the mileage rate?              1.00               1.00          1.00              0.91                 1.00
+What does error E-102 mean?            1.00               0.50          0.67              0.88                 0.67
+
+Average per metric:
+context_recall         0.80
+context_precision      0.67
+faithfulness           0.83
+answer_relevancy       0.88
+factual_correctness    0.71
+```
+
+### 6.4e Read the Scores
+
+Sort by the lowest score first and read those rows. Each low metric points at a different
+fix:
+
+| Low metric | What it means | What to change |
+| :-- | :-- | :-- |
+| **Context Recall** | Search never found the facts | Smaller chunks, contextual retrieval ([Step 3](#step-3-give-every-chunk-context)), hybrid search, better embedding model |
+| **Context Precision** | The facts were found but buried under junk | Better reranker, tune `FLOOR` and `MAX_KEEP` ([Step 6](#step-6-keep-only-the-good-ones-cutoff)) |
+| **Faithfulness** | The model adds things the sources don't say (hallucination) | Stricter prompt rules ([Step 7](#step-7-build-a-safe-prompt-with-numbered-sources)), fewer junk chunks, stronger `CHAT_MODEL` |
+| **Answer Relevancy** | Answers wander, hedge, or dodge the question | Tell the prompt to answer directly first; check follow-up rewriting |
+| **Factual Correctness** | The final answer is wrong | Look at the other four on the same row to find the broken step |
+
+**Common patterns:**
+
+| Pattern on one row | Diagnosis |
+| :-- | :-- |
+| Recall **0**, everything else low | Search problem. Fix retrieval first; nothing after it can help |
+| Recall **high**, Faithfulness **low** | Search worked, the model made things up |
+| Recall, Faithfulness **high**, Factual Correctness **low** | The model faithfully repeated a wrong or outdated chunk, or your `reference` is out of date |
+| All high except Answer Relevancy | Correct but rambling answers: a prompt problem |
+
+```python
+worst = scores.sort_values("factual_correctness").head(5)
+print(worst.round(2).to_string(index=False))
+```
+
+### 6.4f Compare Before and After a Change
+
+Scores only mean something **compared with an earlier run**. Save a baseline, make **one**
+change, run again, compare:
+
+```python
+scores.to_csv("eval_baseline.csv", index=False)       # 1. save today's scores
+
+# 2. change ONE thing (chunk size, reranker, prompt...), then re-run 6.4c and 6.4d
+
+before = pd.read_csv("eval_baseline.csv").drop(columns="question").mean()
+after  = scores.drop(columns="question").mean()
+print(pd.DataFrame({"before": before, "after": after, "change": after - before}).round(2))
+
+#                      before  after  change
+# context_recall         0.80   0.93    0.13   <- the change helped search
+# context_precision      0.67   0.70    0.03
+# faithfulness           0.83   0.84    0.01
+# answer_relevancy       0.88   0.87   -0.01   <- normal judge noise
+# factual_correctness    0.71   0.82    0.11
+```
+
+### 6.4g Good to Know
+
+- **Judge scores wobble.** The judge is an LLM, so scores move a few points between runs
+  even with no change. Ignore differences under ~0.05, and use 30+ questions so one odd
+  answer doesn't swing the average.
+- **Read the worst rows yourself.** A judge can be wrong too. Checking 5 low-scoring answers
+  by hand takes minutes and tells you whether to trust the numbers.
+- **It costs more than 6.2-6.3.** Every metric makes several judge calls per question. Use
+  a small judge model, and run the full suite before a release rather than after every
+  tiny edit.
+- **References matter.** Context Recall, Context Precision and Factual Correctness compare
+  against your `reference`. A wrong or outdated reference gives misleading scores, so have
+  someone who knows the documents check them.
+- **Unanswerable questions don't fit these metrics.** They assume an answer exists. Keep
+  checking "should refuse" questions with 6.3.
+- **Search-only check:** to measure the search alone (like Recall@50 in 6.2), pass the 50
+  `candidates` as `retrieved_contexts` instead of `final`, and run only Context Recall.
+- **Building questions faster:** Ragas can also **generate** test questions from your
+  documents (its test-set generation feature). Review every generated question before
+  trusting it.
+
+**Other ready-made evaluation tools:** **deepeval**, **promptfoo**, **Azure AI Foundry
+evaluations** (built-in groundedness and relevance evaluators), and **Langfuse** /
+**LangSmith** (run evaluations on real logged traffic).
 
 ---
 
@@ -1580,7 +1844,7 @@ flowchart TD
         Q1 --> Q2 --> Q3 --> Q4 --> Q5 --> Q6 --> Q7 --> Q8
     end
 
-    Q8 --> EV["<b>Evaluate</b><br/>golden set | Recall@K | groundedness"]
+    Q8 --> EV["<b>Evaluate</b><br/>golden set | Recall@K | groundedness<br/>Ragas: recall, precision, faithfulness"]
     EV -.->|"tune chunk size, models, floor"| I2
 
     classDef ingest fill:#e8f1fc,stroke:#3b6ea5,stroke-width:1px,color:#0b1d33
@@ -1606,7 +1870,7 @@ flowchart TD
 | Keyword search | Exact words and codes | `rank-bm25`, Elasticsearch/OpenSearch, Azure hybrid, Pinecone full-text |
 | Rerank | Precise relevance scores | Cohere `rerank-v5.0`, Voyage rerank, Jina, `bge-reranker-v2-m3`, Azure semantic ranker |
 | Generate | Writes the answer | OpenAI GPT, Anthropic Claude, Google Gemini, Azure OpenAI |
-| Evaluate | Proves changes help | Golden set + Recall@K, ragas, deepeval, promptfoo |
+| Evaluate | Proves changes help | Golden set + Recall@K, **Ragas** (Part 6.4), deepeval, promptfoo, Azure AI Foundry evaluations |
 | Observe | Logs every answer | Langfuse, LangSmith, Arize Phoenix, Azure AI Foundry tracing |
 | All-in-one frameworks | Wire the steps together | LlamaIndex, LangChain, Haystack |
 
@@ -1645,6 +1909,10 @@ flowchart TD
 | **Allow-list** | Values that must never be redacted (public emails, company names) |
 | **Grounded** | Every fact in the answer is supported by the sources |
 | **Recall@K** | Share of test questions whose correct chunk appears in the top K |
+| **LLM judge** | An LLM used to grade another LLM's output (e.g. "is this claim supported?") |
+| **Ragas** | Open-source library of ready-made LLM-judge metrics for RAG |
+| **Faithfulness** | Share of the answer's claims that the retrieved sources support (catches hallucination) |
+| **Context precision / recall** | Whether the useful chunks were ranked first / whether all needed facts were retrieved |
 | **Agentic RAG** | The model calls a search tool itself, as many times as it needs |
 
 ---
