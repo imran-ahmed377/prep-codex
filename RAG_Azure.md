@@ -542,6 +542,7 @@ print(grounding[:500])
 | :-- | :-- |
 | **Permissions** | Filter on labels (`search.in(visibility, ...)`) as shown. For per-user document permissions, look up Azure AI Search *document-level access control* (it can honor Entra ID / ACL permissions from the source). |
 | **Personal data (PII)** | Add the **PII Detection skill** (`#Microsoft.Skills.Text.PIIDetectionSkill`, with `maskingMode: "replace"`) to the skillset **before** the Text Split skill, and split its `maskedText` output instead of `/document/content`. The why and how are in [RAG.md 5.2](RAG.md#52-remove-personal-data-before-indexing-pii-redaction). |
+| **Caching** | Use **Azure Managed Redis** (turn on its RediSearch module for the semantic cache). Azure Cache for Redis is being retired, so don't start new projects on it. The code and the key rules are in [RAG.md 5.6](RAG.md#56-cache-repeated-questions-with-redis); embed the question once with your embedding deployment and reuse that vector for both the cache and the search. |
 | **Keyless auth** | Managed identity for Search → OpenAI and Search → Storage; `DefaultAzureCredential` in your app. |
 | **Network** | Private endpoints for Search, OpenAI and Storage; disable public access. |
 | **Prompt injection** | Same rules as [RAG.md](RAG.md#step-7-build-a-safe-prompt-with-numbered-sources); also turn on **Azure AI Content Safety Prompt Shields** for documents. |

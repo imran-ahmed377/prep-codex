@@ -43,6 +43,7 @@
   - [5.3 Log Every Answer](#53-log-every-answer)
   - [5.4 Cost](#54-cost)
   - [5.5 Speed](#55-speed)
+  - [5.6 Cache Repeated Questions with Redis](#56-cache-repeated-questions-with-redis)
 - [**Part 6: How to Know It Actually Works (Evaluation)**](#part-6-how-to-know-it-actually-works-evaluation)
   - [6.1 Build a Golden Question Set](#61-build-a-golden-question-set)
   - [6.2 Measure the Search (Recall@K)](#62-measure-the-search-recallk)
@@ -147,6 +148,9 @@ python -m spacy download en_core_web_lg
 
 # Optional: evaluation with Ragas - see Part 6.4
 pip install "ragas>=0.4" pandas
+
+# Optional: cache repeated questions with Redis - see Part 5.6
+pip install redis redisvl
 ```
 
 Set your API keys in the terminal. **Never paste keys into code.**
@@ -674,12 +678,13 @@ def index_document(pdf_path, labels):
     for c in chunks:
         c["embed_text"] = f"{source} (page {c['page']})\n\n{c['text']}"
 
-    # Step 4: embed
+    # Step 4: embed (swap in embed_texts_cached() from Part 5.6 to skip unchanged chunks)
     vectors = embed_texts([c["embed_text"] for c in chunks])
 
     # Steps 5-6: replace the old version
     delete_document(source)
     upload(chunks, vectors)
+    bump_index_version()            # cached answers built from the old version stop matching (Part 5.6)
 
     # Keep a local copy of the chunks for keyword search (Part 4, Step 4)
     all_chunks = json.loads(pathlib.Path("chunks.json").read_text()) if pathlib.Path("chunks.json").exists() else []
@@ -1005,6 +1010,7 @@ put in front of real users.
 | The model takes harmful actions | No real actions from retrieved text without human approval | [Part 4, Step 7](#step-7-build-a-safe-prompt-with-numbered-sources) |
 | Keys leak | Keys in environment variables or a secrets manager, never in code | [Part 2](#21-install-everything) |
 | Personal data in documents | Redact PII before indexing if users shouldn't see it | [5.2](#52-remove-personal-data-before-indexing-pii-redaction) |
+| The cache serves one user's answer to another | Permission scope inside every cache key; Redis with a password, TLS and a private network | [5.6](#56-cache-repeated-questions-with-redis) |
 
 ## 5.2 Remove Personal Data Before Indexing (PII Redaction)
 
@@ -1278,7 +1284,7 @@ pages; the **ratio** between rows is what matters.
 
 - Send fewer chunks (that's the cutoff's job).
 - Use a smaller `CHAT_MODEL` if your golden-set scores ([Part 6](#part-6-how-to-know-it-actually-works-evaluation)) stay the same.
-- Cache answers to repeated questions.
+- Cache answers to repeated questions in Redis ([5.6](#56-cache-repeated-questions-with-redis)).
 - Keep the instructions identical across calls so the provider's prompt caching kicks in.
 
 ## 5.5 Speed
@@ -1290,9 +1296,356 @@ pages; the **ratio** between rows is what matters.
 | Vector + keyword search | 20-100 ms |
 | Rerank 50 chunks | 100-400 ms |
 | LLM writes the answer | 1-4 seconds |
+| **Answer served from the Redis cache** | **1-20 ms** |
 
 The LLM is most of the wait, so **always stream**. If it still feels slow: rerank 25
 candidates instead of 50, use the `-fast` reranker, and use low reasoning effort.
+
+For questions people ask **again and again**, the fastest answer is one you don't compute
+at all: a cached answer comes back in a few milliseconds ([5.6](#56-cache-repeated-questions-with-redis)).
+
+## 5.6 Cache Repeated Questions with Redis
+
+### 5.6a Why Cache?
+
+Real users ask the same questions over and over: *"How do I reset my password?"*, *"What's
+the refund policy?"*. Without a cache, every repeat runs the whole pipeline again and pays
+for it again.
+
+| | Without a cache | With a cache hit |
+| :-- | :-- | :-- |
+| Time to answer | 1-5 seconds | 1-20 ms |
+| LLM cost | Full price, every time | Zero |
+| Load on Pinecone, Cohere, OpenAI | Every question | Only the first time |
+
+**Redis** is an in-memory database: it keeps data in RAM, so reads take well under a
+millisecond. It can **delete keys automatically** after a set time (a **TTL**, time to
+live), which is exactly what a cache needs. **Redis 8** also has built-in **vector search**,
+so it can find *similar* questions, not just identical ones.
+
+> **Redis cache vs the provider's prompt caching:** prompt caching (OpenAI, Anthropic)
+> gives a **discount** on a repeated prompt start, but the LLM still runs. A Redis answer
+> cache **skips the LLM completely**. Use both.
+
+### 5.6b What to Cache: Three Layers
+
+| Layer | Stores | Matches when | Saves | Risk |
+| :-- | :-- | :-- | :-- | :-- |
+| **1. Embedding cache** | text → vector | The exact same text is embedded again | Embedding calls at question time and re-indexing | None (same model + text always gives the same vector) |
+| **2. Exact answer cache** | question → answer + sources | The same question (ignoring case and spacing) | The whole pipeline | Stale or leaked answers if the key is wrong ([5.6c](#56c-the-golden-rule-the-key-must-include-everything-that-changes-the-answer)) |
+| **3. Semantic answer cache** | question vector → answer + sources | A question **with the same meaning** (*"warranty period?"* ≈ *"how long is the warranty?"*) | The whole pipeline, for reworded questions | Can return the answer to a **similar but different** question ([5.6h](#56h-test-the-semantic-threshold-before-trusting-it)) |
+
+Checked in that order: exact first (cheapest, safest), then semantic, then the full pipeline.
+
+### 5.6c The Golden Rule: The Key Must Include Everything That Changes the Answer
+
+A cached answer is only correct if **nothing that shaped it has changed**. So the cache key
+must include **every** input to the answer, not just the question:
+
+| Part of the key | Forget it and... |
+| :-- | :-- |
+| The **standalone** question ([Part 4, Step 1](#step-1-rewrite-follow-up-questions)) | *"what about electronics?"* gets the answer cached for a different conversation |
+| The user's **permission scope** (`allowed_levels`) | **Security bug:** a manager's answer, built from manager-only documents, is served to everyone |
+| The **document version** | Users get last week's policy after you re-index |
+| The **model and prompt** | Answers keep the old style and rules after you change `CHAT_MODEL` or `INSTRUCTIONS` |
+
+The code below squeezes everything except the question into one short **scope code**, used
+by both answer caches.
+
+### 5.6d Start Redis
+
+```bash
+# Local Redis 8 in Docker (on Windows: Docker Desktop or WSL - Redis doesn't run natively)
+docker run -d --name rag-redis -p 6379:6379 redis:8
+
+# Check the vector search module is there: the list should include "search"
+docker exec rag-redis redis-cli MODULE LIST
+
+pip install redis redisvl
+```
+
+**Managed options for production:** Redis Cloud, **Azure Managed Redis** (Azure Cache for
+Redis is being retired, so don't start new projects on it), Amazon ElastiCache / MemoryDB,
+Google Memorystore. Layers 1-2 work on any Redis-compatible store, including Valkey; layer 3
+needs Redis's vector search (Redis 8 or a managed Redis with the search module).
+
+```python
+import os
+import redis
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")   # use rediss:// (TLS) in production
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True)          # decode_responses: get str, not bytes
+
+print(r.ping())                                                    # True = connected
+```
+
+### 5.6e Layer 1: Embedding Cache
+
+Same text + same model always gives the same vector, so an embedding can be cached for a
+long time. Vectors are stored as **packed 32-bit numbers**, about a quarter of the size of
+JSON text (3,000 chunks ≈ 25 MB instead of ~90 MB).
+
+```python
+import base64, hashlib, json
+from array import array
+
+EMBED_TTL = 60 * 60 * 24 * 30                       # 30 days
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+def embedding_key(text):
+    return f"rag:emb:{sha(EMBED_MODEL + '|' + text)}"     # the model is in the key: switching models = fresh cache
+
+def pack(vector):
+    return base64.b64encode(array("f", vector).tobytes()).decode()
+
+def unpack(text):
+    return array("f", base64.b64decode(text)).tolist()
+
+def embed_query_cached(text):
+    "Like embed_query() from Part 4, but each text is only ever paid for once."
+    key = embedding_key(text)
+    hit = r.get(key)
+    if hit:
+        return unpack(hit)
+    vector = embed_query(text)
+    r.set(key, pack(vector), ex=EMBED_TTL)
+    return vector
+```
+
+**It also makes re-indexing cheaper.** Change one page of the 1,000-page manual and only
+that page's chunks are new text; everything else comes from the cache:
+
+```python
+def embed_texts_cached(texts):
+    "Like embed_texts() from Part 3, but only embeds texts it hasn't seen before."
+    keys = [embedding_key(t) for t in texts]
+    cached = r.mget(keys)                                   # one round trip for all keys
+    missing = [i for i, hit in enumerate(cached) if hit is None]
+    new_vectors = embed_texts([texts[i] for i in missing]) if missing else []
+
+    with r.pipeline() as pipe:                              # save the new ones in one round trip
+        for i, vector in zip(missing, new_vectors):
+            pipe.set(keys[i], pack(vector), ex=EMBED_TTL)
+        pipe.execute()
+
+    new_by_position = dict(zip(missing, new_vectors))
+    print(f"Embedding cache: {len(texts) - len(missing)} reused, {len(missing)} new")
+    return [unpack(cached[i]) if cached[i] is not None else new_by_position[i]
+            for i in range(len(texts))]
+```
+
+Use it in `index_document()` in place of `embed_texts()`. (With Level 2 contextual
+retrieval the LLM may word the context slightly differently each run, so fewer chunks
+will match.)
+
+### 5.6f Layer 2: Exact Answer Cache
+
+```python
+import re
+
+ANSWER_TTL    = 60 * 60 * 24                        # 1 day
+NOT_FOUND_TTL = 60 * 10                             # 10 minutes: a new document may answer it soon
+
+def index_version():
+    "A counter that goes up every time a document changes (see 5.6j)."
+    return int(r.get("rag:index_version") or 0)
+
+def cache_scope(user):
+    "Everything besides the question that can change the answer, as one short code."
+    parts = [index_version(), CHAT_MODEL, INSTRUCTIONS, ",".join(sorted(user["allowed_levels"]))]
+    return sha("|".join(map(str, parts)))[:16]
+
+def normalize(question):
+    "'How long is the warranty?' and 'how long is the  warranty' become the same key."
+    return re.sub(r"\s+", " ", question.lower()).strip(" ?!.")
+
+def answer_key(question, scope):
+    return f"rag:answer:{scope}:{sha(normalize(question))}"
+```
+
+Because the document version is **inside** the scope code, re-indexing doesn't need to
+delete anything: new questions simply get new keys, and the old entries expire on their
+own when their TTL runs out.
+
+### 5.6g Layer 3: Semantic Cache (RedisVL)
+
+**RedisVL** (Redis's official Python library for vector features) has a ready-made
+`SemanticCache`. It stores each question's vector and, for a new question, returns the
+cached answer of the closest stored question if it's **close enough**.
+
+```python
+from redisvl.extensions.cache.llm import SemanticCache
+from redisvl.query.filter import Tag
+from redisvl.utils.vectorize import OpenAITextVectorizer
+
+semantic_cache = SemanticCache(
+    name="rag_semantic_cache",
+    redis_url=REDIS_URL,
+    vectorizer=OpenAITextVectorizer(model=EMBED_MODEL),     # same embedding model as the rest of the guide
+    distance_threshold=0.05,                                # STRICT to start - see 5.6h before loosening
+    ttl=ANSWER_TTL,
+    filterable_fields=[{"name": "scope", "type": "tag"}],   # only match answers from the same scope
+)
+```
+
+- **`distance_threshold`** uses cosine distance: `0` means identical meaning, `1` unrelated,
+  `2` opposite. A hit is returned only when the distance is **below** the threshold. Lower
+  is stricter.
+- **`filterable_fields`** adds a `scope` label to every entry, so a search only looks at
+  answers built for the same permissions, documents, model and prompt.
+- We pass our **own** question vector to it (below), so it never pays for a second
+  embedding.
+
+### 5.6h Test the Semantic Threshold Before Trusting It
+
+The danger of a semantic cache: *"refund policy for **electronics**"* and *"refund policy
+for **furniture**"* are very close in meaning, but have **different answers**. Measure the
+distances on your own questions before choosing a threshold:
+
+```python
+import math
+
+def cosine_distance(a, b):
+    "0 = same meaning, 1 = unrelated, 2 = opposite (the scale RedisVL uses)."
+    dot = sum(x * y for x, y in zip(a, b))
+    size = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return 1 - dot / size
+
+SHOULD_MATCH = [            # same question, different words -> same answer is fine
+    ("How long is the warranty?", "What is the warranty period?"),
+    ("Can I return a broken item?", "Is it possible to send back something that arrived broken?"),
+]
+SHOULD_NOT_MATCH = [        # similar words, DIFFERENT answer -> must miss
+    ("What is the refund policy for electronics?", "What is the refund policy for furniture?"),
+    ("Who approves overtime?", "Who approves holiday requests?"),
+    ("Can I return a broken item?", "Can I return an item I simply don't like?"),
+]
+
+for label, pairs in [("should match", SHOULD_MATCH), ("must NOT match", SHOULD_NOT_MATCH)]:
+    for a, b in pairs:
+        distance = cosine_distance(embed_query(a), embed_query(b))
+        print(f"{label:15} {distance:.3f}   {a!r} vs {b!r}")
+```
+
+**How to pick the threshold:** it must be **below the smallest "must NOT match" distance**.
+If that leaves most "should match" pairs above it, keep it strict anyway and accept fewer
+semantic hits: a cache miss costs a few seconds, a wrong answer costs trust.
+
+### 5.6i Put It Together: `ask_cached()`
+
+The same steps as `ask()` ([Part 4](#querying-all-steps-in-one-function)), with the cache
+checks in front and a save at the end:
+
+```python
+def is_cacheable(question):
+    "Never keep questions that contain personal data in a shared cache (see 5.2)."
+    return redact(question) == question
+
+def count(event):
+    r.incr(f"rag:stats:{event}")                     # for the hit-rate report in 5.6k
+
+def ask_cached(question, user, history=None):
+    "Question in, cited answer out - from the cache when possible."
+    question = make_standalone(history or [], question)       # cache the STANDALONE question
+    scope = cache_scope(user)
+
+    # 1. Exact match: the same question was asked before (~1 ms)
+    hit = r.get(answer_key(question, scope))
+    if hit:
+        count("exact_hit")
+        cached = json.loads(hit)
+        return cached["answer"], cached["sources"]
+
+    # 2. Semantic match: a question with the same meaning was asked before (~5-20 ms)
+    q_vector = embed_query_cached(question)
+    hits = semantic_cache.check(vector=q_vector, filter_expression=Tag("scope") == scope)
+    if hits:
+        count("semantic_hit")
+        return hits[0]["response"], hits[0]["metadata"]["sources"]
+
+    # 3. Miss: run the full pipeline, reusing the vector we already have
+    count("miss")
+    candidates = merge_rrf(vector_search(q_vector, user), keyword_search(question, user))[:50]
+    final = keep_best(rerank(question, candidates))
+    answer = generate(question, final) if final else NOT_FOUND
+    sources = [{"id": c["id"], "source": c["source"], "page": c["page"]} for c in final]
+
+    # 4. Save it for next time
+    if is_cacheable(question):
+        record = json.dumps({"answer": answer, "sources": sources})
+        r.set(answer_key(question, scope), record, ex=ANSWER_TTL if final else NOT_FOUND_TTL)
+        if final:                                    # never spread "not found" to similar questions
+            semantic_cache.store(prompt=question, response=answer, vector=q_vector,
+                                 metadata={"sources": sources}, filters={"scope": scope})
+    return answer, sources
+
+
+answer, sources = ask_cached("What is the refund policy for broken items?", user)   # ~3 s
+answer, sources = ask_cached("what is the refund policy for broken items", user)    # ~1 ms (exact)
+answer, sources = ask_cached("How do refunds work for items that arrive broken?", user)  # semantic, if close enough
+```
+
+`sources` holds the file and page for each citation, so the display code from
+[Part 4, Step 8](#step-8-generate-and-stream-the-answer) works the same for cached answers.
+
+### 5.6j When Documents Change: Bump the Version
+
+**Every time a document is added, changed or deleted, bump the version.** Every old cached
+answer immediately stops matching, because the version is part of every answer key and
+scope tag.
+
+```python
+def bump_index_version():
+    "Call after ANY document change. Old cached answers stop matching instantly."
+    return r.incr("rag:index_version")
+
+def clear_answer_cache():
+    "Emergency button: delete every cached answer now (embeddings are kept)."
+    for key in r.scan_iter("rag:answer:*"):
+        r.delete(key)
+    semantic_cache.clear()
+```
+
+`index_document()` ([Part 3](#indexing-all-steps-in-one-function)) already calls
+`bump_index_version()` after uploading. If you delete a file **without** re-uploading it,
+call it yourself after `delete_document()`.
+
+### 5.6k Measure the Hit Rate
+
+A cache is only worth running if it actually gets hits:
+
+```python
+def cache_report():
+    stats = {e: int(r.get(f"rag:stats:{e}") or 0) for e in ("exact_hit", "semantic_hit", "miss")}
+    total = sum(stats.values()) or 1
+    for event, n in stats.items():
+        print(f"{event:13} {n:7}  ({n / total:.0%})")
+
+cache_report()
+# exact_hit        412  (41%)
+# semantic_hit      96  (10%)
+# miss             494  (49%)    <- about half the questions never touched the LLM
+```
+
+- **Low hit rate?** Your users rarely repeat themselves. Keep layer 1, drop layers 2-3.
+- **Watch the semantic hits.** Log them ([5.3](#53-log-every-answer)) and read a sample:
+  every wrong one means the threshold is too loose.
+
+### 5.6l Good to Know
+
+- **Evaluate without the cache.** Run Part 6 with `ask()`, not `ask_cached()`, or you'll be
+  measuring yesterday's answers instead of today's pipeline.
+- **Secure Redis like a database.** Cached answers contain document text. Use a password
+  (ACL), TLS (`rediss://`), and a private network; never expose port 6379 to the internet.
+- **Set a memory limit.** Configure `maxmemory` and `maxmemory-policy allkeys-lru` so that
+  when Redis is full it drops the least recently used entries instead of refusing writes.
+- **Cached answers don't stream.** They arrive instantly, so just print them.
+- **Personal questions stay out.** `is_cacheable()` skips any question that contains
+  personal data, which also keeps "delete my data" (GDPR) requests simple.
+- **Frameworks have this built in:** LangChain and LlamaIndex both offer Redis caches, and
+  RedisVL also has an `EmbeddingsCache`. The ideas (and the golden rule) are the same.
 
 ---
 
@@ -1808,6 +2161,10 @@ It's powerful but **expensive to build** (many LLM calls per document). Use it o
 | Quality dropped after switching embedding provider | Missing `input_type` (query vs document) | Set it on both sides |
 | Every upload rejected | Index `dimension` doesn't match the model | 1536 for `-small`, 3072 for `-large` |
 | Slow (5+ seconds) | Too many candidates, no streaming | Rerank 25, `-fast` reranker, stream |
+| Same popular questions are always slow and expensive | No answer cache | Redis cache (5.6) |
+| Old answers keep coming back after re-indexing | Version not bumped, so old cache keys still match | `bump_index_version()` after every document change |
+| A user sees content from documents they can't access | Cache key missing the permission scope | Build keys with `cache_scope(user)` (5.6c) |
+| A reworded question gets the answer to a different question | Semantic cache threshold too loose | Lower `distance_threshold`; re-run the test in 5.6h |
 | Bot reveals phone numbers, emails or ID numbers | Personal data was indexed unredacted | Redact after extraction (5.2), then re-index the files |
 | Answers say `<PERSON>` where a name is needed | Over-redaction | Add public names to the allow-list (`KEEP`), or raise `score_threshold` |
 
@@ -1841,7 +2198,9 @@ flowchart TD
         Q6["<b>6. Cutoff</b><br/>floor + within 15% of best"]
         Q7["<b>7. Safe prompt</b><br/>numbered sources in tags"]
         Q8["<b>8. Generate + stream</b><br/>answer with [1] citations"]
-        Q1 --> Q2 --> Q3 --> Q4 --> Q5 --> Q6 --> Q7 --> Q8
+        QC["<b>Check Redis cache</b><br/>exact, then semantic"]
+        Q1 --> QC -->|"miss"| Q2 --> Q3 --> Q4 --> Q5 --> Q6 --> Q7 --> Q8
+        QC -.->|"hit: answer in ms"| HIT["<b>Cached answer</b><br/>+ sources"]
     end
 
     Q8 --> EV["<b>Evaluate</b><br/>golden set | Recall@K | groundedness<br/>Ragas: recall, precision, faithfulness"]
@@ -1851,7 +2210,7 @@ flowchart TD
     classDef query  fill:#eaf7ee,stroke:#3f8f5b,stroke-width:1px,color:#0b1d33
     classDef eval   fill:#fdf3e3,stroke:#b8862b,stroke-width:1px,color:#0b1d33
     class I1,I2,I3,I4,I5 ingest
-    class Q1,Q2,Q3,Q4,Q5,Q6,Q7,Q8 query
+    class Q1,QC,Q2,Q3,Q4,Q5,Q6,Q7,Q8,HIT query
     class EV eval
 ```
 
@@ -1872,6 +2231,7 @@ flowchart TD
 | Generate | Writes the answer | OpenAI GPT, Anthropic Claude, Google Gemini, Azure OpenAI |
 | Evaluate | Proves changes help | Golden set + Recall@K, **Ragas** (Part 6.4), deepeval, promptfoo, Azure AI Foundry evaluations |
 | Observe | Logs every answer | Langfuse, LangSmith, Arize Phoenix, Azure AI Foundry tracing |
+| Cache | Answers repeated questions in milliseconds | Redis 8 + RedisVL `SemanticCache`, Redis Cloud, Azure Managed Redis, ElastiCache, Valkey (exact caches only) |
 | All-in-one frameworks | Wire the steps together | LlamaIndex, LangChain, Haystack |
 
 ## 9.3 Starting Numbers (Tune Them Later)
@@ -1914,6 +2274,9 @@ flowchart TD
 | **Faithfulness** | Share of the answer's claims that the retrieved sources support (catches hallucination) |
 | **Context precision / recall** | Whether the useful chunks were ranked first / whether all needed facts were retrieved |
 | **Agentic RAG** | The model calls a search tool itself, as many times as it needs |
+| **Cache hit / miss** | The answer was found in the cache / had to be computed |
+| **TTL** | Time to live: how long a cache entry is kept before Redis deletes it |
+| **Semantic cache** | A cache that matches questions by meaning (vector distance), not exact text |
 
 ---
 
